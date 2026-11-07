@@ -1,0 +1,22 @@
+# Spelling Analyzer - Python Dependencies
+
+# Core Dependencies
+pandas>=2.1.4
+matplotlib>=3.8.2
+seaborn>=0.13.1
+
+# FastAPI Dependencies (for API integration)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+
+# Optional: For enhanced features
+# openpyxl>=3.1.2        # For Excel support
+# numpy>=1.26.3          # For numerical operations
+# scipy>=1.11.4          # For statistical analysis
+
+# Development Dependencies (optional)
+# pytest>=7.4.3          # For testing
+# black>=23.12.1         # For code formatting
+# flake8>=7.0.0          # For linting
