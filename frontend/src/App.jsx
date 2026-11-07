@@ -1,10 +1,21 @@
 import React, { useState } from 'react';
-import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { CheckCircle, XCircle, TrendingUp, Award, User, BookOpen, Briefcase, Target } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowRight,
+  BarChart3,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Clipboard,
+  FileCheck2,
+  FileText,
+  Loader2,
+  Send,
+  Sparkles,
+  User,
+  X,
+} from 'lucide-react';
 import './App.css';
-import './Review.css';
-
-const COLORS = ['#4CAF50', '#f44336'];
 
 function App() {
   const [formData, setFormData] = useState({
@@ -16,101 +27,114 @@ function App() {
     hobbies: '',
     goal: '',
     self_intro: '',
-    text: ''
+    text: '',
   });
-
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [showReport, setShowReport] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [copied, setCopied] = useState(null);
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+  const wordCount = formData.text.trim() ? formData.text.trim().split(/\s+/).length : 0;
+
+  const handleInputChange = (event) => {
+    const { name, value } = event.target;
+    setFormData((previous) => ({ ...previous, [name]: value }));
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async (event) => {
+    event.preventDefault();
     setLoading(true);
     setError(null);
     setResult(null);
-    setShowReport(false);
 
     try {
       const response = await fetch('http://localhost:8000/analyze-and-save', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to analyze text');
+        throw new Error('Unable to analyze this text. Please check that the API is running.');
       }
 
       const data = await response.json();
       setResult(data.analysis);
-      setShowReport(true);
-    } catch (err) {
-      setError(err.message);
+    } catch (requestError) {
+      setError(requestError.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const getLevelColor = (level) => {
-    switch(level) {
-      case 'Advanced': return '#4CAF50';
-      case 'Needs Improvement': return '#FF9800';
-      case 'Beginner': return '#f44336';
-      case 'Very Poor': return '#9C27B0';
-      default: return '#2196F3';
+  const copySuggestion = async (suggestion, index) => {
+    try {
+      await navigator.clipboard.writeText(suggestion);
+      setCopied(index);
+      window.setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setError('The suggestion could not be copied.');
     }
   };
 
-  const getLevelIcon = (level) => {
-    switch(level) {
-      case 'Advanced': return <Award className="level-icon" />;
-      case 'Needs Improvement': return <TrendingUp className="level-icon" />;
-      default: return <BookOpen className="level-icon" />;
-    }
-  };
-
-  const pieData = result ? [
-    { name: 'Correct', value: result.total_words - result.mistakes },
-    { name: 'Mistakes', value: result.mistakes }
-  ] : [];
-
-  const barData = result ? [
-    { name: 'Total Words', value: result.total_words, fill: '#2196F3' },
-    { name: 'Correct', value: result.total_words - result.mistakes, fill: '#4CAF50' },
-    { name: 'Mistakes', value: result.mistakes, fill: '#f44336' }
-  ] : [];
+  const accuracy = result
+    ? Math.max(0, 100 - Number(result.percentage || 0))
+    : 0;
+  const corrections = result?.corrections || [];
+  const grammarIssues = result?.grammar || [];
 
   return (
-    <div className="app">
-      <header className="header">
-        <div className="header-content">
-          <h1>📝 English Spelling Analyzer</h1>
-          <p>Analyze your English writing and get instant feedback</p>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">
+            <Sparkles size={20} />
+          </div>
+          <div>
+            <span className="eyebrow">Writing intelligence</span>
+            <h1>Spelling Analyzer</h1>
+          </div>
+        </div>
+        <div className="status-pill">
+          <span className="status-dot" />
+          Analysis workspace
         </div>
       </header>
 
-      <div className="container">
-        <div className="form-section">
-          <h2>👤 Personal Information</h2>
-          <form onSubmit={handleSubmit}>
-            <div className="form-grid">
+      <main className="workspace">
+        <section className="intro">
+          <div>
+            <span className="eyebrow">Clarity at a glance</span>
+            <h2>Polish every message before it goes out.</h2>
+            <p>
+              Check spelling, surface grammar issues, and get confident
+              corrections in seconds.
+            </p>
+          </div>
+          <div className="intro-icon" aria-hidden="true">
+            <FileCheck2 size={28} />
+          </div>
+        </section>
+
+        <div className="workspace-grid">
+          <section className="editor-panel panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Input</span>
+                <h3>Review your writing</h3>
+              </div>
+              <FileText size={20} aria-hidden="true" />
+            </div>
+
+            <form onSubmit={handleSubmit}>
               <div className="form-group">
-                <label>
-                  <User size={16} />
-                  Name *
+                <label htmlFor="name">
+                  <User size={15} />
+                  Workspace name
                 </label>
                 <input
+                  id="name"
                   type="text"
                   name="name"
                   value={formData.name}
@@ -120,299 +144,196 @@ function App() {
                 />
               </div>
 
-              <div className="form-group">
-                <label>🎂 Age</label>
-                <input
-                  type="text"
-                  name="age"
-                  value={formData.age}
-                  onChange={handleInputChange}
-                  placeholder="Enter your age"
-                />
-              </div>
+              <button
+                className="details-toggle"
+                type="button"
+                onClick={() => setShowDetails((visible) => !visible)}
+                aria-expanded={showDetails}
+              >
+                Optional profile details
+                <ChevronDown className={showDetails ? 'rotate-icon' : ''} size={16} />
+              </button>
 
-              <div className="form-group">
-                <label>
-                  <BookOpen size={16} />
-                  Study
-                </label>
-                <input
-                  type="text"
-                  name="study"
-                  value={formData.study}
-                  onChange={handleInputChange}
-                  placeholder="e.g., B.Tech, M.Sc"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>🎓 Graduated?</label>
-                <select
-                  name="graduated"
-                  value={formData.graduated}
-                  onChange={handleInputChange}
-                >
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
-                </select>
-              </div>
-
-              {formData.graduated === 'yes' && (
-                <>
+              {showDetails && (
+                <div className="details-grid">
                   <div className="form-group">
-                    <label>
-                      <Briefcase size={16} />
-                      Occupation
-                    </label>
-                    <input
-                      type="text"
-                      name="occupation"
-                      value={formData.occupation}
-                      onChange={handleInputChange}
-                      placeholder="Your current job"
-                    />
+                    <label htmlFor="age">Age</label>
+                    <input id="age" name="age" value={formData.age} onChange={handleInputChange} />
                   </div>
-
                   <div className="form-group">
-                    <label>🎯 Hobbies</label>
-                    <input
-                      type="text"
-                      name="hobbies"
-                      value={formData.hobbies}
-                      onChange={handleInputChange}
-                      placeholder="Your hobbies"
-                    />
+                    <label htmlFor="study">Study</label>
+                    <input id="study" name="study" value={formData.study} onChange={handleInputChange} placeholder="e.g. B.Tech" />
                   </div>
-
-                  <div className="form-group full-width">
-                    <label>
-                      <Target size={16} />
-                      Future Goal
-                    </label>
-                    <input
-                      type="text"
-                      name="goal"
-                      value={formData.goal}
-                      onChange={handleInputChange}
-                      placeholder="What's your goal?"
-                    />
+                  <div className="form-group">
+                    <label htmlFor="graduated">Graduation</label>
+                    <select id="graduated" name="graduated" value={formData.graduated} onChange={handleInputChange}>
+                      <option value="no">Not graduated</option>
+                      <option value="yes">Graduated</option>
+                    </select>
                   </div>
-
-                  <div className="form-group full-width">
-                    <label>📝 Self Introduction (50 words)</label>
-                    <textarea
-                      name="self_intro"
-                      value={formData.self_intro}
-                      onChange={handleInputChange}
-                      placeholder="Tell us about yourself..."
-                      rows="3"
-                    />
+                  <div className="form-group">
+                    <label htmlFor="occupation">Occupation</label>
+                    <input id="occupation" name="occupation" value={formData.occupation} onChange={handleInputChange} />
                   </div>
-                </>
+                </div>
               )}
-            </div>
 
-            <div className="form-group full-width">
-              <label>
-                ✍️ Text to Analyze *
-              </label>
-              <textarea
-                name="text"
-                value={formData.text}
-                onChange={handleInputChange}
-                required
-                placeholder="Enter your English sentence or paragraph here..."
-                rows="5"
-                className="text-input"
-              />
-            </div>
-
-            <button 
-              type="submit" 
-              className="submit-btn"
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <div className="spinner"></div>
-                  Analyzing...
-                </>
-              ) : (
-                <>
-                  🔍 Analyze Text
-                </>
-              )}
-            </button>
-          </form>
-
-          {error && (
-            <div className="error-message">
-              <XCircle size={20} />
-              <span>{error}</span>
-            </div>
-          )}
-        </div>
-
-        {showReport && result && (
-          <div className="results-section">
-            <h2>📊 Analysis Report</h2>
-
-            {/* Summary Cards */}
-            <div className="stats-grid">
-              <div className="stat-card">
-                <div className="stat-icon" style={{ background: '#2196F3' }}>
-                  📝
+              <div className="form-group editor-group">
+                <div className="editor-label">
+                  <label htmlFor="text">Text to analyze</label>
+                  <span>{wordCount} words</span>
                 </div>
-                <div className="stat-info">
-                  <h3>{result.total_words}</h3>
-                  <p>Total Words</p>
+                <textarea
+                  id="text"
+                  name="text"
+                  value={formData.text}
+                  onChange={handleInputChange}
+                  required
+                  placeholder="Paste an email, message, or paragraph here..."
+                  rows={13}
+                />
+                <span className="field-hint">Your original formatting and line breaks are preserved.</span>
+              </div>
+
+              <button className="primary-button" type="submit" disabled={loading}>
+                {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+                {loading ? 'Analyzing...' : 'Analyze writing'}
+                {!loading && <ArrowRight size={17} />}
+              </button>
+            </form>
+
+            {error && (
+              <div className="error-message" role="alert">
+                <AlertCircle size={18} />
+                <span>{error}</span>
+                <button type="button" onClick={() => setError(null)} aria-label="Dismiss error">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="dashboard-panel panel">
+            {!result ? (
+              <div className="empty-dashboard">
+                <div className="empty-icon"><BarChart3 size={25} /></div>
+                <span className="eyebrow">Analysis dashboard</span>
+                <h3>Your report will appear here</h3>
+                <p>Submit your writing to see accuracy, corrections, and actionable suggestions.</p>
+              </div>
+            ) : (
+              <div className="results-content">
+                <div className="panel-heading">
+                  <div>
+                    <span className="eyebrow">Analysis dashboard</span>
+                    <h3>Writing report</h3>
+                  </div>
+                  <span className="level-tag">{result.level}</span>
                 </div>
-              </div>
 
-              <div className="stat-card">
-                <div className="stat-icon" style={{ background: '#4CAF50' }}>
-                  <CheckCircle size={24} />
+                <div className="metric-bar" aria-label="Writing metrics">
+                  <div className="metric">
+                    <span>Total words</span>
+                    <strong>{result.total_words}</strong>
+                  </div>
+                  <div className="metric">
+                    <span>Error rate</span>
+                    <strong>{Number(result.percentage || 0).toFixed(1)}%</strong>
+                  </div>
+                  <div className="metric metric-success">
+                    <span>Accuracy score</span>
+                    <strong>{accuracy.toFixed(1)}%</strong>
+                  </div>
                 </div>
-                <div className="stat-info">
-                  <h3>{result.total_words - result.mistakes}</h3>
-                  <p>Correct Words</p>
+
+                <div className="feedback-callout">
+                  <CheckCircle2 size={18} />
+                  <p>{result.feedback}</p>
                 </div>
-              </div>
 
-              <div className="stat-card">
-                <div className="stat-icon" style={{ background: '#f44336' }}>
-                  <XCircle size={24} />
+                <div className="diff-card">
+                  <div className="diff-column">
+                    <span className="section-label">Original text</span>
+                    <p>{result.original}</p>
+                  </div>
+                  <ArrowRight className="diff-arrow" size={18} aria-hidden="true" />
+                  <div className="diff-column corrected-copy">
+                    <span className="section-label">Corrected text</span>
+                    <p>{result.corrected}</p>
+                  </div>
                 </div>
-                <div className="stat-info">
-                  <h3>{result.mistakes}</h3>
-                  <p>Mistakes</p>
-                </div>
-              </div>
 
-              <div className="stat-card">
-                <div className="stat-icon" style={{ background: '#FF9800' }}>
-                  📈
-                </div>
-                <div className="stat-info">
-                  <h3>{result.percentage.toFixed(1)}%</h3>
-                  <p>Error Rate</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Level Badge */}
-            <div className="level-badge" style={{ background: getLevelColor(result.level) }}>
-              {getLevelIcon(result.level)}
-              <div>
-                <h3>{result.level}</h3>
-                <p>{result.feedback}</p>
-              </div>
-            </div>
-
-            {/* Charts */}
-            <div className="charts-grid">
-              <div className="chart-card">
-                <h3>📊 Accuracy Distribution</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                      outerRadius={100}
-                      fill="#8884d8"
-                      dataKey="value"
-                    >
-                      {pieData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div className="chart-card">
-                <h3>📈 Word Statistics</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={barData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis />
-                    <Tooltip />
-                    <Bar dataKey="value" fill="#8884d8" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Text Comparison */}
-            <div className="text-comparison">
-              <div className="text-box">
-                <h3>📄 Original Text</h3>
-                <p>{result.original}</p>
-              </div>
-              <div className="arrow">→</div>
-              <div className="text-box corrected">
-                <h3>✅ Corrected Text</h3>
-                <p>{result.corrected}</p>
-              </div>
-            </div>
-
-            {/* Corrections & grammar (new) */}
-            {(result.corrections?.length > 0 || result.grammar?.length > 0) && (
-              <div className="review-panel">
-                {result.corrections?.length > 0 && (
-                  <>
-                    <h3>🔤 Spelling ({result.corrections.length})</h3>
-                    <ul className="review-list">
-                      {result.corrections.map((c, i) => (
-                        <li key={i}>
-                          <span className="bad">{c.original}</span> → <span className="good">{c.suggestion}</span>
-                          <span className={`badge ${c.applied ? 'applied' : 'review'}`}>
-                            {c.applied ? 'fixed' : 'please review'} · {Math.round(c.confidence * 100)}%
+                <div className="suggestions-section">
+                  <div className="section-heading">
+                    <div>
+                      <span className="section-label">Review queue</span>
+                      <h4>Suggestions <span>{corrections.length}</span></h4>
+                    </div>
+                    <span className="muted-label">Spelling</span>
+                  </div>
+                  {corrections.length > 0 ? (
+                    <div className="suggestions-table">
+                      <div className="table-row table-header">
+                        <span>Word</span>
+                        <span>Correction</span>
+                        <span>Confidence</span>
+                        <span>Quick action</span>
+                      </div>
+                      {corrections.map((correction, index) => (
+                        <div className="table-row" key={`${correction.start}-${correction.end}`}>
+                          <span className="original-word">{correction.original}</span>
+                          <span className="suggested-word">{correction.suggestion}</span>
+                          <span>
+                            <span className={`confidence ${correction.applied ? 'high' : 'medium'}`}>
+                              {Math.round(correction.confidence * 100)}%
+                            </span>
                           </span>
-                          {c.kind === 'context' && <span className="badge ctx">wrong word</span>}
-                          {c.suggestions?.length > 1 && (
-                            <small> also: {c.suggestions.slice(1, 4).join(', ')}</small>
-                          )}
-                        </li>
+                          <button
+                            className="icon-button"
+                            type="button"
+                            onClick={() => copySuggestion(correction.suggestion, index)}
+                            title="Copy correction"
+                          >
+                            {copied === index ? <Check size={15} /> : <Clipboard size={15} />}
+                            <span>{copied === index ? 'Copied' : 'Copy'}</span>
+                          </button>
+                        </div>
                       ))}
-                    </ul>
-                  </>
-                )}
-                {result.grammar?.length > 0 && (
-                  <>
-                    <h3>📐 Grammar ({result.grammar.length})</h3>
-                    <ul className="review-list">
-                      {result.grammar.map((g, i) => (
-                        <li key={i}>
-                          <span className="bad">{g.original}</span>
-                          {g.suggestion && <> → <span className="good">{g.suggestion}</span></>}
-                          <small> {g.message}</small>
-                        </li>
+                    </div>
+                  ) : (
+                    <div className="no-issues"><CheckCircle2 size={17} /> No spelling corrections needed.</div>
+                  )}
+                </div>
+
+                {grammarIssues.length > 0 && (
+                  <div className="grammar-section">
+                    <div className="section-heading">
+                      <div>
+                        <span className="section-label">Language quality</span>
+                        <h4>Grammar issues <span>{grammarIssues.length}</span></h4>
+                      </div>
+                    </div>
+                    <div className="grammar-list">
+                      {grammarIssues.map((issue, index) => (
+                        <div className="grammar-row" key={`${issue.start}-${issue.end}-${index}`}>
+                          <span className="original-word">{issue.original}</span>
+                          <ArrowRight size={14} />
+                          <span className="suggested-word">{issue.suggestion || 'Review'}</span>
+                          <span>{issue.message}</span>
+                        </div>
                       ))}
-                    </ul>
-                  </>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
-
-            {/* Download Button */}
-            <button 
-              className="download-btn"
-              onClick={() => window.print()}
-            >
-              🖨️ Print Report
-            </button>
-          </div>
-        )}
-      </div>
+          </section>
+        </div>
+      </main>
 
       <footer className="footer">
-        <p>© 2026 English Spelling Analyzer | Powered by FastAPI & React</p>
+        <span>Spelling Analyzer</span>
+        <span>FastAPI + React workspace</span>
       </footer>
     </div>
   );
