@@ -1,10 +1,13 @@
-Name,Age,Study,Graduated,Occupation,Hobbies,Goal,Self_Intro,Original_Input,Corrected_Input,Total_Words,Mistakes,Mistake_Percentage,Level,Feedback
-thanush,20,b.e,no,,,,,the athlet ran acros the feild with great speed  ,the athlete ran across the field with great speed,9,3,33.33333333333333,Needs Improvement,Improve vocabulary and sentence structure with daily practice.
-thanush,20,b tech,no,,,,,she needed to seperete the papers into diffren... ,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly."
-Test User,25,Computer Science,no,,,,,I havv a drream to becme a softwre enginear,i have a dream to become a software engineer,9,5,55.55555555555556,Beginner,Your grammar needs significant improvement. Start from basics daily.
-thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly."
-thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly."
-thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly."
-thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly."
-thanush,39,btech,no,,,,,heooo hiw are yot,hero his are not,4,3,75.0,Beginner,Your grammar needs significant improvement. Start from basics daily.
-thanush,17,kmec,no,,,,,hellu hoe are yoi,hell he are you,4,3,75.0,Beginner,Your grammar needs significant improvement. Start from basics daily.
+Name,Age,Study,Graduated,Occupation,Hobbies,Goal,Self_Intro,Original_Input,Corrected_Input,Total_Words,Mistakes,Mistake_Percentage,Level,Feedback,Grammar_Issues
+thanush,20,b.e,no,,,,,the athlet ran acros the feild with great speed  ,the athlete ran across the field with great speed,9,3,33.33333333333333,Needs Improvement,Improve vocabulary and sentence structure with daily practice.,
+thanush,20,b tech,no,,,,,she needed to seperete the papers into diffren... ,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly.",
+Test User,25,Computer Science,no,,,,,I havv a drream to becme a softwre enginear,i have a dream to become a software engineer,9,5,55.55555555555556,Beginner,Your grammar needs significant improvement. Start from basics daily.,
+thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly.",
+thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly.",
+thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly.",
+thanush,39,btech,no,,,,,she needed to seperete the papers into diffren..,she needed to separate the papers into different,8,2,25.0,Needs Improvement,"Revise tenses, plurals, and article usage regularly.",
+thanush,39,btech,no,,,,,heooo hiw are yot,hero his are not,4,3,75.0,Beginner,Your grammar needs significant improvement. Start from basics daily.,
+thanush,17,kmec,no,,,,,hellu hoe are yoi,hell he are you,4,3,75.0,Beginner,Your grammar needs significant improvement. Start from basics daily.,
+tha,23,be,no,,,,,hellu how ary you,hellu how are you,4,2,50.0,Beginner,Your writing needs significant improvement. Practise a little every day.,0.0
+tha,23,be,no,,,,,hellu how ary you,hellu how are you,4,2,50.0,Beginner,Your writing needs significant improvement. Practise a little every day.,0.0
+tha,23,be,no,,,,,hellu how ary you,hello how are you,4,2,50.0,Beginner,Your writing needs significant improvement. Practise a little every day.,0.0

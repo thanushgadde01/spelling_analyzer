@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { CheckCircle, XCircle, TrendingUp, Award, User, BookOpen, Briefcase, Target } from 'lucide-react';
 import './App.css';
+import './Review.css';
 
 const COLORS = ['#4CAF50', '#f44336'];
 
@@ -359,6 +360,45 @@ function App() {
                 <p>{result.corrected}</p>
               </div>
             </div>
+
+            {/* Corrections & grammar (new) */}
+            {(result.corrections?.length > 0 || result.grammar?.length > 0) && (
+              <div className="review-panel">
+                {result.corrections?.length > 0 && (
+                  <>
+                    <h3>🔤 Spelling ({result.corrections.length})</h3>
+                    <ul className="review-list">
+                      {result.corrections.map((c, i) => (
+                        <li key={i}>
+                          <span className="bad">{c.original}</span> → <span className="good">{c.suggestion}</span>
+                          <span className={`badge ${c.applied ? 'applied' : 'review'}`}>
+                            {c.applied ? 'fixed' : 'please review'} · {Math.round(c.confidence * 100)}%
+                          </span>
+                          {c.kind === 'context' && <span className="badge ctx">wrong word</span>}
+                          {c.suggestions?.length > 1 && (
+                            <small> also: {c.suggestions.slice(1, 4).join(', ')}</small>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {result.grammar?.length > 0 && (
+                  <>
+                    <h3>📐 Grammar ({result.grammar.length})</h3>
+                    <ul className="review-list">
+                      {result.grammar.map((g, i) => (
+                        <li key={i}>
+                          <span className="bad">{g.original}</span>
+                          {g.suggestion && <> → <span className="good">{g.suggestion}</span></>}
+                          <small> {g.message}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Download Button */}
             <button 

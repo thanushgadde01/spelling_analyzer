@@ -1,450 +1,390 @@
+"""
+spell.py - spelling engine (context-aware, formatting-preserving).
+
+Pipeline
+    text -> tokenize (keeps punctuation/spacing)
+         -> skip URLs, emails, code, numbers, acronyms, CamelCase, proper nouns, ignore list
+         -> SymSpell candidate generation (fast, edit distance <= 2)
+         -> rank by: word frequency + keyboard-aware edit distance + phonetic match
+                     + neighbouring words (bigrams)
+         -> confidence score; only confident fixes are applied automatically
+         -> real-word errors (their/there, to/too, ...) via bigram context
+         -> grammar issues (grammar.py) reported separately
+"""
+import logging
+import math
 import os
 import re
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
 
-# ===============================================================================
-# SPELL CORRECTION MODULE (Peter Norvig's Algorithm)
-# ===============================================================================
+import symspellpy
+from symspellpy import SymSpell, Verbosity
 
-def load_dictionary(dict_path):
-    """
-    Load word frequency dictionary from a text file.
-    
-    Args:
-        dict_path (str): Path to the dictionary text file
-        
-    Returns:
-        Counter: Word frequency counter
-    """
-    try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
-            text = f.read()
-            word_list = re.findall(r'\w+', text.lower())
-            return Counter(word_list)
-    except FileNotFoundError:
-        print(f"⚠️  Warning: Dictionary file not found at {dict_path}")
-        print("Using empty dictionary. Spell correction may not work properly.")
-        return Counter()
+import grammar as grammar_mod
+from tokenizer import tokenize, restore_case, is_technical
 
+log = logging.getLogger("spelling.engine")
 
-def get_word_probability(word, word_freq_dict):
-    """Calculate probability of a word based on frequency."""
-    total = sum(word_freq_dict.values())
-    if total == 0:
-        return 0
-    return word_freq_dict.get(word, 0) / total
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+_SYM_DIR = Path(symspellpy.__file__).resolve().parent
 
+# --- tunables ----------------------------------------------------------------
+DIST_PENALTY = 4.0        # score lost per edit (~55x frequency per edit)
+PHONETIC_BONUS = 1.5
+CONTEXT_WEIGHT = 0.25
+PROPER_NOUN_CONF = 0.85          # capitalised unknown words (Rajesh, Kavya) are names unless the fix is obvious
+DEFAULT_APPLY_THRESHOLD = 0.55   # below this we only SUGGEST, we don't replace
+CONTEXT_MARGIN = 4.0             # real-word fix needs this much more context support
+CONTEXT_MIN_SUPPORT = 5.0
 
-def get_edits_distance_1(word):
-    """Generate all words that are one edit away from the input word."""
-    letters = 'abcdefghijklmnopqrstuvwxyz'
-    splits = [(word[:i], word[i:]) for i in range(len(word) + 1)]
-    deletes = [L + R[1:] for L, R in splits if R]
-    transposes = [L + R[1] + R[0] + R[2:] for L, R in splits if len(R) > 1]
-    replaces = [L + c + R[1:] for L, R in splits if R for c in letters]
-    inserts = [L + c + R for L, R in splits for c in letters]
-    return set(deletes + transposes + replaces + inserts)
+# 1-2 letter words that are real English; everything else that short is junk in word lists
+_SHORT_OK = {"a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "hi", "if", "in", "is", "it",
+             "me", "my", "no", "of", "oh", "ok", "on", "or", "so", "to", "up", "us", "we", "ah", "ox"}
 
+_CONTRACTIONS = """don't doesn't didn't can't couldn't won't wouldn't shouldn't isn't aren't wasn't weren't
+haven't hasn't hadn't i'm i've i'll i'd you're you've you'll you'd he's she's it's we're we've we'll we'd
+they're they've they'll they'd that's there's here's what's who's let's how's where's when's ain't mustn't
+needn't mightn't o'clock ma'am""".split()
 
-def get_edits_distance_2(word):
-    """Generate all words that are two edits away from the input word."""
-    return (e2 for e1 in get_edits_distance_1(word) for e2 in get_edits_distance_1(e1))
+# groups of words that are valid on their own but often mixed up
+CONFUSABLES = [
+    {"their", "there"}, {"to", "too", "two"},
+    {"then", "than"}, {"weather", "whether"}, {"site", "sight", "cite"}, {"affect", "effect"},
+    {"lose", "loose"}, {"principal", "principle"}, {"accept", "except"}, {"were", "where"},
+    {"hear", "here"}, {"write", "right"}, {"new", "knew"}, {"quiet", "quite"}, {"whole", "hole"},
+    {"buy", "by"}, {"week", "weak"}, {"piece", "peace"}, {"brake", "break"},
+]
+# "dont" -> "don't", "youre" -> "you're" (only when the apostrophe-less form is not a real word)
+_CONTRACTION_FIX = {c.replace("'", ""): c for c in _CONTRACTIONS if "'" in c and c != "o'clock"}
 
+_LIKELY_CONTRACTIONS = {"cant", "wont"}     # real words, but almost always typos for can't / won't
+_COMMON_TYPO_FIXES = {"hellu": "hello"}
 
-def get_known_words(word_list, word_freq_dict):
-    """Return the subset of words that appear in the dictionary."""
-    return set(w for w in word_list if w in word_freq_dict)
+_CONFUSABLE_MAP = {}
+for _g in CONFUSABLES:
+    for _w in _g:
+        _CONFUSABLE_MAP[_w] = _g - {_w}
 
 
-def get_candidates(word, word_freq_dict):
-    """Generate possible spelling corrections for a word."""
-    return (get_known_words([word], word_freq_dict) or 
-            get_known_words(get_edits_distance_1(word), word_freq_dict) or 
-            get_known_words(get_edits_distance_2(word), word_freq_dict) or 
-            [word])
+# --- helpers: keyboard-aware distance + phonetics -----------------------------
+def _key_positions():
+    pos = {}
+    for r, (row, off) in enumerate((("qwertyuiop", 0.0), ("asdfghjkl", 0.5), ("zxcvbnm", 1.0))):
+        for c, ch in enumerate(row):
+            pos[ch] = (r, c + off)
+    return pos
 
 
-def correct_word(word, word_freq_dict):
-    """Return the most likely spelling correction for a word."""
-    candidates = get_candidates(word, word_freq_dict)
-    return max(candidates, key=lambda w: get_word_probability(w, word_freq_dict))
+_KEYS = _key_positions()
 
 
-def extract_words(text):
-    """Extract all words from text."""
-    return re.findall(r'\w+', text.lower())
+def _adjacent(a, b):
+    if a in _KEYS and b in _KEYS:
+        (r1, c1), (r2, c2) = _KEYS[a], _KEYS[b]
+        return math.hypot(r1 - r2, c1 - c2) <= 1.2
+    return False
 
 
-def correct_text(text, word_freq_dict):
-    """
-    Correct spelling mistakes in the entire text.
-    
-    Args:
-        text (str): Input text to correct
-        word_freq_dict (Counter): Word frequency dictionary
-        
-    Returns:
-        tuple: (original_words, corrected_words, corrected_text)
-    """
-    original_words = extract_words(text)
-    corrected_words = [correct_word(w, word_freq_dict) for w in original_words]
-    corrected_text = ' '.join(corrected_words)
-    return original_words, corrected_words, corrected_text
+def weighted_distance(a: str, b: str) -> float:
+    """Damerau-Levenshtein (optimal string alignment); substituting a neighbouring key costs 0.5."""
+    la, lb = len(a), len(b)
+    d = [[0.0] * (lb + 1) for _ in range(la + 1)]
+    for i in range(la + 1):
+        d[i][0] = i
+    for j in range(lb + 1):
+        d[0][j] = j
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            sub = 0.0 if a[i - 1] == b[j - 1] else (0.5 if _adjacent(a[i - 1], b[j - 1]) else 1.0)
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + sub)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[la][lb]
 
 
-# ===============================================================================
-# DATA ANALYSIS MODULE
-# ===============================================================================
-
-def analyze_spelling(original_words, corrected_words):
-    """
-    Analyze spelling mistakes and calculate statistics.
-    
-    Args:
-        original_words (list): Original words from input
-        corrected_words (list): Corrected words
-        
-    Returns:
-        dict: Statistics including total words, mistakes, and percentage
-    """
-    total_words = len(original_words)
-    mistakes = sum(1 for o, c in zip(original_words, corrected_words) if o != c)
-    mistake_percentage = (mistakes / total_words * 100) if total_words > 0 else 0
-    
-    return {
-        'total_words': total_words,
-        'mistakes': mistakes,
-        'mistake_percentage': mistake_percentage
-    }
+_SOUNDEX = {c: str(n) for n, letters in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1) for c in letters}
 
 
-def determine_level_and_feedback(mistake_percentage):
-    """
-    Determine English proficiency level and provide feedback.
-    
-    Args:
-        mistake_percentage (float): Percentage of spelling mistakes
-        
-    Returns:
-        tuple: (level, feedback)
-    """
-    if mistake_percentage < 5:
+def soundex(word: str) -> str:
+    word = re.sub(r"[^a-z]", "", word.lower())
+    if not word:
+        return ""
+    out, last = word[0].upper(), _SOUNDEX.get(word[0], "")
+    for ch in word[1:]:
+        code = _SOUNDEX.get(ch, "")
+        if code and code != last:
+            out += code
+        if ch not in "hw":
+            last = code
+    return (out + "000")[:4]
+
+
+# --- result objects -----------------------------------------------------------
+@dataclass
+class Correction:
+    start: int
+    end: int
+    original: str
+    suggestion: str                 # best guess
+    suggestions: list               # ranked alternatives
+    confidence: float               # 0..1
+    kind: str                       # "spelling" | "context"
+    applied: bool                   # True if the text was actually changed
+
+
+@dataclass
+class TextAnalysis:
+    original: str
+    corrected: str
+    total_words: int
+    corrections: list = field(default_factory=list)
+    grammar: list = field(default_factory=list)
+
+    @property
+    def spelling_mistakes(self) -> int:
+        return len(self.corrections)
+
+    @property
+    def spelling_percentage(self) -> float:
+        return self.spelling_mistakes / self.total_words * 100 if self.total_words else 0.0
+
+    @property
+    def grammar_percentage(self) -> float:
+        return len(self.grammar) / self.total_words * 100 if self.total_words else 0.0
+
+
+# --- the engine ---------------------------------------------------------------
+class SpellChecker:
+    def __init__(self, dictionary_path=None, bigram_path=None, custom_words_path=None,
+                 ignore_path=None, max_edit_distance=2, apply_threshold=DEFAULT_APPLY_THRESHOLD):
+        self.apply_threshold = apply_threshold
+        self.max_edit_distance = max_edit_distance
+        self._sym = SymSpell(max_dictionary_edit_distance=max_edit_distance, prefix_length=7)
+
+        uni = Path(dictionary_path) if dictionary_path else _SYM_DIR / "frequency_dictionary_en_82_765.txt"
+        bi = Path(bigram_path) if bigram_path else _SYM_DIR / "frequency_bigramdictionary_en_243_342.txt"
+        for p in (uni, bi):
+            if not p.is_file():
+                raise FileNotFoundError(f"Dictionary file not found: {p}")
+
+        self._load_unigrams(uni)
+        self._bigrams = self._load_bigrams(bi)
+        for w in _CONTRACTIONS:
+            self._add(w, 5_000_000)
+
+        self._custom = set()
+        self._ignore = set()
+        self._load_wordfile(custom_words_path or DATA_DIR / "custom_words.txt", custom=True)
+        self._load_wordfile(ignore_path or DATA_DIR / "ignore_words.txt", custom=False)
+        log.info("SpellChecker ready: %d words, %d bigrams", len(self._sym.words), len(self._bigrams))
+
+    # ---- loading
+    def _add(self, word, count):
+        self._sym.create_dictionary_entry(word, count)
+
+    def _load_unigrams(self, path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2 or not parts[1].isdigit():
+                    continue
+                w = parts[0].lower()
+                if not re.fullmatch(r"[a-z']+", w):
+                    continue
+                if len(w) <= 2 and w not in _SHORT_OK:       # drop junk like "cd", "ii", "st"
+                    continue
+                self._add(w, int(parts[1]))
+
+    @staticmethod
+    def _load_bigrams(path):
+        out = {}
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 3 and p[2].isdigit():
+                    out[(p[0], p[1])] = int(p[2])
+        return out
+
+    def _load_wordfile(self, path, custom):
+        path = Path(path)
+        if not path.is_file():
+            return
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#")[0].strip()
+            if not line:
+                continue
+            parts = line.split()
+            w = parts[0].lower()
+            if custom:
+                self._custom.add(w)
+                self._add(w, int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 500_000)
+            else:
+                self._ignore.add(w)
+
+    def add_words(self, words):
+        """Add user-defined words at runtime."""
+        for w in words:
+            w = w.strip().lower()
+            if w:
+                self._custom.add(w)
+                self._add(w, 500_000)
+
+    # ---- queries
+    @property
+    def size(self):
+        return len(self._sym.words)
+
+    def is_known(self, word, extra_ignore=frozenset()):
+        w = word.lower().replace("\u2019", "'")
+        if w in self._sym.words or w in self._ignore or w in extra_ignore:
+            return True
+        # possessives / plural possessives: teacher's -> teacher
+        if w.endswith("'s") and (w[:-2] in self._sym.words or w[:-2] in extra_ignore):
+            return True
+        return False
+
+    def _bigram_score(self, prev, word, nxt):
+        s = 0.0
+        if prev:
+            s += math.log(1 + self._bigrams.get((prev, word), 0))
+        if nxt:
+            s += math.log(1 + self._bigrams.get((word, nxt), 0))
+        return s
+
+    # ---- candidate ranking
+    def _rank(self, word, prev, nxt):
+        found = self._sym.lookup(word, Verbosity.ALL, max_edit_distance=self.max_edit_distance,
+                                 include_unknown=False)
+        if not found:
+            return []
+        sx = soundex(word)
+        scored = []
+        for s in found:
+            d = weighted_distance(word, s.term)
+            score = math.log(s.count + 1) - DIST_PENALTY * d
+            if sx and sx == soundex(s.term):
+                score += PHONETIC_BONUS
+            score += CONTEXT_WEIGHT * self._bigram_score(prev, s.term, nxt)
+            scored.append((score, d, s.term))
+        scored.sort(reverse=True)
+        return scored[:6]
+
+    @staticmethod
+    def _confidence(word, scored):
+        top = scored[0]
+        m = max(sc for sc, _, _ in scored)
+        total = sum(math.exp(sc - m) for sc, _, _ in scored)
+        p_top = math.exp(top[0] - m) / total
+        edit_ratio = min(0.5, top[1] / max(len(word), 1))
+        return round(p_top * (1 - edit_ratio), 3)
+
+    # ---- main entry
+    def check(self, text, ignore_words=(), auto_apply=True, grammar=True, use_languagetool=None):
+        extra = {w.lower() for w in ignore_words}
+        tokens = tokenize(text)
+        words = [t for t in tokens if t.kind == "word"]
+        norm = [w.text.lower().replace("\u2019", "'") for w in words]
+
+        corrections, replacements = [], {}
+        for i, tok in enumerate(words):
+            raw, low = tok.text, norm[i]
+            if not raw.isascii() or is_technical(raw):
+                continue
+            prev = norm[i - 1] if i > 0 else None
+            nxt = norm[i + 1] if i + 1 < len(norm) else None
+
+            known = self.is_known(low, extra)
+            if low in _COMMON_TYPO_FIXES:
+                fixed = _COMMON_TYPO_FIXES[low]
+                corr = Correction(tok.start, tok.end, raw, self._fit(raw, fixed), [self._fit(raw, fixed)],
+                                  0.99, "spelling", False)
+            elif low in _CONTRACTION_FIX and (not known or low in _LIKELY_CONTRACTIONS):
+                fixed = _CONTRACTION_FIX[low]
+                corr = Correction(tok.start, tok.end, raw, self._fit(raw, fixed), [self._fit(raw, fixed)],
+                                  0.6 if known else 0.95, "spelling", False)
+            elif known:
+                corr = self._check_real_word(tok, low, prev, nxt)
+            else:
+                scored = self._rank(low, prev, nxt)
+                if not scored:
+                    continue                                          # nothing close: leave it alone
+                conf = self._confidence(low, scored)
+                if raw[0].isupper():                                  # probably a name: Rajesh, Kavya
+                    near = scored[0][1] <= 1.0                        # only a very close match counts as a typo
+                    if not near or conf < (0.6 if tok.sentence_start else PROPER_NOUN_CONF):
+                        continue
+                corr = Correction(tok.start, tok.end, raw,
+                                  self._fit(raw, scored[0][2]),
+                                  [self._fit(raw, t) for _, _, t in scored[:5]],
+                                  conf, "spelling", False)
+            if corr:
+                corr.applied = auto_apply and corr.confidence >= self.apply_threshold
+                corrections.append(corr)
+                if corr.applied:
+                    replacements[tok.start] = corr
+
+        corrected = self._apply(text, tokens, replacements)
+        analysis = TextAnalysis(text, corrected, len(words), corrections)
+
+        if grammar:
+            checked = [(t.start, t.end, t.text, replacements[t.start].suggestion if t.start in replacements else t.text)
+                       for t in words]
+            issues = grammar_mod.rule_based_issues(checked)
+            if use_languagetool is None:
+                use_languagetool = os.getenv("USE_LANGUAGETOOL", "0") == "1"
+            if use_languagetool:
+                issues = grammar_mod.merge(grammar_mod.languagetool_issues(text), issues)
+            analysis.grammar = issues
+        return analysis
+
+    def _check_real_word(self, tok, low, prev, nxt):
+        """Valid word, but maybe the wrong one (their/there). Needs strong bigram evidence."""
+        alts = _CONFUSABLE_MAP.get(low)
+        if not alts or not (prev or nxt):
+            return None
+        cur = self._bigram_score(prev, low, nxt)
+        best_score, best = max((self._bigram_score(prev, a, nxt), a) for a in alts)
+        if best_score < CONTEXT_MIN_SUPPORT or best_score - cur < CONTEXT_MARGIN:
+            return None
+        conf = round(1 / (1 + math.exp(-(best_score - cur - CONTEXT_MARGIN) / 2)), 3)
+        ranked = [self._fit(tok.text, a) for a in sorted(alts, key=lambda a: -self._bigram_score(prev, a, nxt))]
+        return Correction(tok.start, tok.end, tok.text, self._fit(tok.text, best), ranked, conf, "context", False)
+
+    @staticmethod
+    def _fit(original, replacement):
+        out = restore_case(original, replacement)
+        if out.startswith("i'"):
+            out = "I" + out[1:]
+        return out.replace("'", "\u2019") if "\u2019" in original else out
+
+    @staticmethod
+    def _apply(text, tokens, replacements):
+        parts = []
+        for t in tokens:
+            c = replacements.get(t.start) if t.kind == "word" else None
+            parts.append(c.suggestion if c else t.text)
+        return "".join(parts)
+
+
+# --- scoring / feedback -------------------------------------------------------
+def determine_level_and_feedback(spelling_pct, grammar_pct=0.0):
+    """Level uses spelling + grammar; the feedback message names the weaker area."""
+    total = spelling_pct + grammar_pct
+    if total < 5:
         return "Advanced", "Excellent English! You're almost perfect."
-    elif mistake_percentage >= 95:
+    if total >= 95:
         return "Very Poor", "Focus on basic grammar rules, spelling, and sentence structure."
-    elif mistake_percentage > 40:
-        level = "Beginner"
-        feedback = "Your grammar needs significant improvement. Start from basics daily."
+    if total > 40:
+        return "Beginner", "Your writing needs significant improvement. Practise a little every day."
+    focus = "grammar (articles, tenses, subject-verb agreement)" if grammar_pct > spelling_pct else "spelling"
+    if total < 10:
+        tip = f"Minor mistakes. Review your {focus}."
+    elif total < 20:
+        tip = f"You're doing well. Keep working on {focus} and proofread before sending."
+    elif total < 30:
+        tip = f"Practise regularly - your main weakness is {focus}."
     else:
-        level = "Needs Improvement"
-        if mistake_percentage < 10:
-            feedback = "Minor mistakes. Review tense and subject-verb agreement."
-        elif mistake_percentage < 15:
-            feedback = "You're doing well! Focus on spelling and grammar basics."
-        elif mistake_percentage < 20:
-            feedback = "Practice more with grammar exercises and proofreading."
-        elif mistake_percentage < 25:
-            feedback = "Work on prepositions, punctuation, and spelling errors."
-        elif mistake_percentage < 30:
-            feedback = "Revise tenses, plurals, and article usage regularly."
-        elif mistake_percentage < 35:
-            feedback = "Improve vocabulary and sentence structure with daily practice."
-        else:
-            feedback = "Work harder on subject-verb agreement and sentence flow."
-    
-    return level, feedback
-
-
-# ===============================================================================
-# DATA STORAGE MODULE
-# ===============================================================================
-
-def load_or_create_master_csv(master_path):
-    """
-    Load existing master CSV or create a new one.
-    
-    Args:
-        master_path (str): Path to the master CSV file
-        
-    Returns:
-        DataFrame: Master dataframe
-    """
-    if os.path.exists(master_path):
-        return pd.read_csv(master_path)
-    else:
-        columns = [
-            "Name", "Age", "Study", "Graduated", "Occupation", "Hobbies",
-            "Goal", "Self_Intro", "Original_Input", "Corrected_Input",
-            "Total_Words", "Mistakes", "Mistake_Percentage", "Level", "Feedback"
-        ]
-        return pd.DataFrame(columns=columns)
-
-
-def save_to_master_csv(df, master_path):
-    """
-    Save dataframe to master CSV file.
-    
-    Args:
-        df (DataFrame): Dataframe to save
-        master_path (str): Path to save the CSV
-    """
-    df.to_csv(master_path, index=False)
-    print(f"\n✅ Data saved to {master_path}")
-
-
-def append_entry_to_master(entry_dict, master_path):
-    """
-    Append a single entry to the master CSV.
-    
-    Args:
-        entry_dict (dict): Dictionary containing entry data
-        master_path (str): Path to the master CSV file
-        
-    Returns:
-        DataFrame: Updated master dataframe
-    """
-    df_master = load_or_create_master_csv(master_path)
-    df_new = pd.DataFrame([entry_dict])
-    df_master = pd.concat([df_master, df_new], ignore_index=True)
-    save_to_master_csv(df_master, master_path)
-    return df_master
-
-
-# ===============================================================================
-# USER INPUT MODULE
-# ===============================================================================
-
-def collect_user_details():
-    """
-    Collect user personal details through interactive prompts.
-    
-    Returns:
-        dict: User details or None if user exits
-    """
-    print("\n" + "="*60)
-    print("📋 PERSONAL DETAILS COLLECTION")
-    print("="*60)
-    
-    name = input("👤 Name: ").strip()
-    if name.lower() == 'exit':
-        return None
-    
-    age = input("🎂 Age: ").strip()
-    study = input("🎓 What are you studying (e.g., B.E, B.Tech, M.Sc, etc.): ").strip()
-    is_graduate = input("🎓 Have you graduated? (yes/no): ").strip().lower()
-    
-    user_data = {
-        'name': name,
-        'age': age,
-        'study': study,
-        'graduated': is_graduate,
-        'occupation': None,
-        'hobbies': None,
-        'goal': None,
-        'self_intro': None
-    }
-    
-    if is_graduate == "yes":
-        user_data['occupation'] = input("💼 Current occupation: ").strip()
-        user_data['hobbies'] = input("🎯 Hobbies: ").strip()
-        user_data['goal'] = input("🎯 Future goal: ").strip()
-        user_data['self_intro'] = input("📝 Self-intro (50 words): ").strip()
-        print("\n✅ Thanks for sharing!\n")
-    
-    return user_data
-
-
-def collect_text_for_analysis():
-    """
-    Collect text from user for spelling analysis.
-    
-    Returns:
-        str: User input text
-    """
-    print("\n" + "="*60)
-    print("📝 TEXT ANALYSIS")
-    print("="*60)
-    text = input("Enter your English sentence or paragraph to analyze:\n> ")
-    return text
-
-
-# ===============================================================================
-# VISUALIZATION MODULE
-# ===============================================================================
-
-def plot_single_run_pie_chart(total_words, mistakes):
-    """
-    Create pie chart showing correct vs incorrect words for a single run.
-    
-    Args:
-        total_words (int): Total number of words
-        mistakes (int): Number of mistakes
-    """
-    correct = total_words - mistakes
-    
-    plt.figure(figsize=(8, 6))
-    plt.pie([correct, mistakes],
-            labels=['Correct', 'Mistakes'],
-            autopct='%1.1f%%',
-            startangle=140,
-            colors=['#66b3ff', '#ff6666'],
-            explode=(0.05, 0.05))
-    plt.title('📊 Spelling Accuracy (Current Session)', fontsize=14, fontweight='bold')
-    plt.axis('equal')
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_progress_over_time(master_path):
-    """
-    Plot mistake percentage progress over time for all users.
-    
-    Args:
-        master_path (str): Path to the master CSV file
-    """
-    df_master = load_or_create_master_csv(master_path)
-    
-    if df_master.empty:
-        print("⚠️  No data available for plotting.")
-        return
-    
-    # Add session numbers for each user
-    df_master['Session'] = df_master.groupby("Name").cumcount() + 1
-    
-    plt.figure(figsize=(12, 7))
-    sns.lineplot(data=df_master, x="Session", y="Mistake_Percentage", 
-                 hue="Name", marker='o', linewidth=2.5, markersize=8)
-    
-    plt.title("📈 Spelling Mistake Percentage Over Time by User", 
-              fontsize=14, fontweight='bold')
-    plt.xlabel("Session Number", fontsize=12)
-    plt.ylabel("Mistake Percentage (%)", fontsize=12)
-    plt.legend(title="User Name", bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-
-def display_results(stats, level, feedback, original_text, corrected_text):
-    """
-    Display analysis results to the user.
-    
-    Args:
-        stats (dict): Statistics dictionary
-        level (str): Proficiency level
-        feedback (str): Feedback message
-        original_text (str): Original input text
-        corrected_text (str): Corrected text
-    """
-    print("\n" + "="*60)
-    print("📊 ANALYSIS RESULTS")
-    print("="*60)
-    print(f"📝 Total Words: {stats['total_words']}")
-    print(f"❌ Mistakes: {stats['mistakes']}")
-    print(f"📉 Mistake Percentage: {stats['mistake_percentage']:.2f}%")
-    print(f"🎯 Level: {level}")
-    print(f"💡 Feedback: {feedback}")
-    print("\n" + "-"*60)
-    print("📄 ORIGINAL TEXT:")
-    print(original_text)
-    print("\n" + "-"*60)
-    print("✅ CORRECTED TEXT:")
-    print(corrected_text)
-    print("="*60 + "\n")
-
-
-# ===============================================================================
-# MAIN APPLICATION
-# ===============================================================================
-
-def run_spelling_analyzer(dict_path=r"C:\Users\thanu\OneDrive\Desktop\assault\spelling checker\backend\big.txt", 
-                         master_path="master.csv"):
-    """
-    Main function to run the spelling analyzer application.
-    
-    Args:
-        dict_path (str): Path to the dictionary file
-        master_path (str): Path to the master CSV file
-    """
-    print("\n" + "="*60)
-    print("🔤 SPELLING ANALYZER APPLICATION")
-    print("="*60)
-    
-    # Load dictionary
-    print("📚 Loading dictionary...")
-    word_freq_dict = load_dictionary(dict_path)
-    
-    if not word_freq_dict:
-        print("❌ Cannot proceed without a valid dictionary. Exiting...")
-        return
-    
-    print(f"✅ Dictionary loaded with {len(word_freq_dict)} unique words.\n")
-    
-    # Collect user details
-    user_data = collect_user_details()
-    if user_data is None:
-        print("👋 Exiting application...")
-        return
-    
-    # Collect text for analysis
-    user_text = collect_text_for_analysis()
-    
-    # Perform spelling correction
-    print("\n🔍 Analyzing text...")
-    original_words, corrected_words, corrected_text = correct_text(user_text, word_freq_dict)
-    
-    # Analyze statistics
-    stats = analyze_spelling(original_words, corrected_words)
-    level, feedback = determine_level_and_feedback(stats['mistake_percentage'])
-    
-    # Display results
-    display_results(stats, level, feedback, user_text, corrected_text)
-    
-    # Prepare entry for storage
-    entry = {
-        "Name": user_data['name'],
-        "Age": user_data['age'],
-        "Study": user_data['study'],
-        "Graduated": user_data['graduated'],
-        "Occupation": user_data['occupation'],
-        "Hobbies": user_data['hobbies'],
-        "Goal": user_data['goal'],
-        "Self_Intro": user_data['self_intro'],
-        "Original_Input": user_text,
-        "Corrected_Input": corrected_text,
-        "Total_Words": stats['total_words'],
-        "Mistakes": stats['mistakes'],
-        "Mistake_Percentage": stats['mistake_percentage'],
-        "Level": level,
-        "Feedback": feedback
-    }
-    
-    # Save to master CSV
-    print("💾 Saving data to master CSV...")
-    df_master = append_entry_to_master(entry, master_path)
-    
-    print("\n📁 Master dataset summary:")
-    print(f"   Total entries: {len(df_master)}")
-    print(f"   Unique users: {df_master['Name'].nunique()}")
-    
-    # Visualizations
-    print("\n📊 Generating visualizations...\n")
-    plot_single_run_pie_chart(stats['total_words'], stats['mistakes'])
-    plot_progress_over_time(master_path)
-    
-    print("\n✅ Analysis complete! Thank you for using Spelling Analyzer.\n")
-
-
-# ===============================================================================
-# ENTRY POINT
-# ===============================================================================
-
-if __name__ == "__main__":
-    # You can customize these paths
-    DICTIONARY_PATH = r"C:\Users\thanu\OneDrive\Dokumen\big.txt"
-    MASTER_CSV_PATH = "master.csv"
-    
-    run_spelling_analyzer(DICTIONARY_PATH, MASTER_CSV_PATH)
+        tip = f"Focus on {focus}, and read more English to build vocabulary."
+    return "Needs Improvement", tip

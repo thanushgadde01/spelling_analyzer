@@ -1,0 +1,1 @@
+# Words that are never flagged and never offered as suggestions (names, slang).
